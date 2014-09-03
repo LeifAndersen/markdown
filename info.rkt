@@ -7,7 +7,8 @@
                "srfi-lite-lib"
                "rackjure"
                ("parsack" "0.3")
-               "sexp-diff"))
+               "sexp-diff"
+               "feature-profile"))
 (define build-deps '("at-exp-lib"
                      "html-lib"
                      "rackunit-lib"
