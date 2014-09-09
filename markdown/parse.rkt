@@ -1,20 +1,11 @@
-#lang at-exp racket/base
+#lang at-exp racket
 
-(require racket/contract/base
-         racket/dict
-         racket/file
-         racket/format
-         racket/function
-         racket/list
-         racket/match
-         racket/port
-         racket/promise
-         racket/string
-         rackjure/threading
-         xml/xexpr
+(require "parsack.rkt"
          "entity.rkt"
          "html.rkt"
-         "parsack.rkt"
+         (only-in xml xml->xexpr element attribute)
+         xml/xexpr
+         rackjure/threading
          "xexpr.rkt"
          "xexpr2text.rkt")
 
@@ -22,7 +13,8 @@
  (contract-out
   [read-markdown (->* () (symbol?) xexpr-element-list?)]
   [parse-markdown (->* ((or/c string? path?)) (symbol?) xexpr-element-list?)]
-  [current-strict-markdown? parameter/c]))
+  [current-strict-markdown? parameter/c])
+ parsack-features)
 
 (module+ test
   (require rackunit))
@@ -104,6 +96,37 @@
     (Empty (Ok pos state (Msg pos "" null)))]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; A couple crude debugging tools to get "trace" of the parse.
+
+(define-syntax (tr stx)
+  (syntax-case stx ()
+    [(_ parser)
+     (with-syntax ([fn (format "~v" (syntax->datum #'parser))])
+       #'(match-lambda
+          [(and state (State inp pos user))
+           (printf "Try ~a\nat ~v on ~v. userstate=~v\n"
+                   fn
+                   pos
+                   (substring inp 0 (min (string-length inp) 40))
+                   user)
+           (parser state)]))]))
+
+(define-syntax-rule (<OR> p ...)
+  (tr (<or> (tr p) ...)))
+
+;; Use to step through a part of the grammar that is (many1 p).
+(define (parse-debug p s)
+  (define-values (parsed more)
+    (match (parse p s)
+      [(Consumed! (Ok parsed (State more _ _) _)) (values parsed more)]
+      [(Empty     (Ok parsed (State more _ _) _)) (values parsed more)]
+      [x (parsack-error (~v x))]))
+  (displayln "parsed:")
+  (pretty-print parsed)
+  (unless (equal? more "")
+    (parse-debug p more)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; This is to process an entire Markdown document.
 ;; - Sets parameters like footnote number to 0.
@@ -119,11 +142,9 @@
                  [current-footnote-prefix footnote-prefix-symbol]
                  [current-footnotes (make-hash)]
                  [current-footnote-defs (make-hash)])
-    (begin0
-      (~>> (parse-markdown* (string-append text "\n\n"))
-           resolve-refs
-           append-footnote-defs)
-      (OR-DEBUG:PRINT-RESULTS))))
+    (~>> (parse-markdown* (string-append text "\n\n"))
+         resolve-refs
+         append-footnote-defs)))
 
 (define (file->string/no-cr path)
   (regexp-replace* #rx"\r" (file->string path) ""))
@@ -174,8 +195,8 @@
        "escaped char"))
 
 (define $normal-char
-  (<?> (<or> (noneOf (~a space-chars special-chars "\n"))
-             $escaped-char)
+  (<?> (<or> $escaped-char
+             (noneOf (~a space-chars special-chars "\n")))
        "normal char"))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -210,7 +231,6 @@
 (define $double-quoted (quoted #\"))
 (define $quoted (<or> $single-quoted $double-quoted))
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
 ;; HTML
@@ -234,7 +254,6 @@
   (pdo (x <- $html-element) ;; allow e.g. "<i>x</i><table></table>"
        (return (~> x normalize-xexprs walk-html))))
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
 ;; Inline
@@ -284,12 +303,20 @@
                 (return null))
             (return " "))))
 
+(define $line-break
+  (try (pdo (char #\space)
+            (char #\space)
+            $sp
+            $end-line
+            (return `(br ())))))
+
+(define $spaces->space
+  (pdo (many1 $space-char)
+       (return " ")))
+
 (define $whitespace
-  ;; 1. 2+ spaces followed by $end-line ==> <br>
-  ;; 2. 1+ spaces ==> " "
-  (pdo $space-char
-       (<or> (try (pdo (many1 $space-char) $end-line (return `(br ())))) ;1
-             (>> (many $space-char) (return " "))))) ;2
+  (<or> $line-break
+        $spaces->space))
 
 (define ($strong state)
   ($_strong state)) ;; defined after $inline
@@ -301,7 +328,7 @@
 ;; smart punctuation
 
 (define $smart-em-dash
-  (>> (try (pdo (char #\-) (char #\-) (optional (char #\-))))
+  (>> (try (oneOfStrings "---" "--"))
       (return 'mdash)))
 
 (define $smart-en-dash
@@ -352,7 +379,7 @@
   (pdo (fail-in-quote-context 'single)
        (fail-just-after-str)
        (char #\')
-       (lookAhead (<or> $alphaNum (char #\")))
+       (lookAhead $alphaNum)
        (return 'sdquo)))
 
 (define $single-quote-end
@@ -369,7 +396,7 @@
   (pdo (fail-in-quote-context 'double)
        (fail-just-after-str)
        (char #\")
-       (lookAhead (<or> $alphaNum (char #\')))
+       (lookAhead $alphaNum)
        (return 'ldquo)))
 
 (define $double-quote-end
@@ -425,7 +452,10 @@
 
 (define (source-url excludes)
   (pdo (xs <- (many (>> (optional (char #\\))
-                        (noneOf (string-append " " excludes)))))
+                        (<or> (noneOf (string-append " " excludes))
+                              ;; (>> (notFollowedBy $link-title)
+                              ;;     (char #\space))
+                              ))))
        (return (list->string xs))))
 
 (define $source
@@ -630,21 +660,20 @@
                       `(a ([href ,href]) ,label))))))
 
 ;; Idea from pandoc: To avoid perf probs, parse 4+ * or _ as literal
-;; instead of attempting to parse as $emph or $strong.
-(define $at-least-4-stars-or-underlines
-  (try (pdo (c <- (oneOf "*_"))
-            (char c) (char c) (char c)
+;; instead of attempting to parse as emph or strong.
+(define (4+ c)
+  (define 4s (make-string 4 c))
+  (try (pdo (string 4s)
             (xs <- (many (char c)))
-            (return (string-append (make-string 4 c)
-                                   (list->string xs))))))
+            (return (string-append 4s (list->string xs))))))
 
 (define $inline
   (<?> (<or> $str
+             (unless-strict $smart-punctuation)
              $whitespace
              $end-line
-             (unless-strict $smart-punctuation)
              $code
-             $at-least-4-stars-or-underlines
+             (<or> (4+ #\*) (4+ #\_))
              $strong
              $emph
              (unless-strict $footnote-ref)
@@ -656,58 +685,42 @@
              $special)
        "inline"))
 
-;;; Have to define these after $inline
-
+;; Have to define these after $inline
 (define $_strong
-  (pdo (cs  <- (lookAhead (oneOfStrings "**" "__")))
-       (str <- (return (list->string cs)))
-       (xs  <- (enclosed (string str) (try (string str)) $inline))
+  (pdo (xs <- (<or> (enclosed (string "**") (try (string "**")) $inline)
+                    (enclosed (string "__") (try (string "__")) $inline)))
        (return `(strong () ,@xs))))
 
+(define (emph c)
+  (enclosed (pdo (char c) (notFollowedBy (char c)))
+            (try (pdo (notFollowedBy $strong)
+                      (char c)
+                      (notFollowedBy $alphaNum)))
+            $inline))
+
 (define $_emph
-  (pdo (c  <- (lookAhead (oneOf "*_")))
-       (xs <- (enclosed (pdo (char c) (notFollowedBy (char c)))
-                        (try (pdo (notFollowedBy $strong)
-                                  (char c)
-                                  (notFollowedBy $alphaNum)))
-                        $inline))
+  (pdo (xs <- (<or> (emph #\*) (emph #\_)))
        (return `(em () ,@xs))))
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
 ;; Block
 ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; This is a common-prefix refactoring of what used to be three
-;; parsers -- $para, $plain, and $setext-heading.
-(define $setext-heading/para/plain
-  (try
-   (pdo (xs <- (many1 (pdo (notFollowedBy $newline) $inline)))
-        (<or>
-         ;; setext heading
-         (try (pdo $newline
-                   (c <- (oneOf "=-"))
-                   (many (char c))
-                   $newline
-                   (many1 $blank-line)
-                   (return (heading-xexpr (match c [#\= 'h1] [#\- 'h2]) xs))))
-         ;; para or plain
-         (pdo (ys <- (many $inline)) ;; \n may be $end-line
-              (<or>
-               ;; para
-               (try (pdo $newline
-                         (<or> (many1 $blank-line)
-                               ;; Allow a block HTML
-                               ;; element to follow without
-                               ;; a blank line, e.g.
-                               ;; "foo\n<table></table>"
-                               (lookAhead $html/block))
-                         (return `(p () ,@(append xs ys)))))
-               ;; plain
-               (pdo (optional $blank-line)
-                    (return `(SPLICE ,@(append xs ys))))))))))
+(define $para
+  (try (pdo (xs <- (many1 $inline))
+            $newline
+            (<or> (many1 $blank-line)
+                  ;; Allow a block HTML element to follow without a blank
+                  ;; line, e.g. "foo\n<table></table>"
+                  (lookAhead $html/block))
+            (return `(p () ,@xs)))))
+
+(define $plain
+  (try (pdo (xs <- (many1 $inline))
+            (optional $blank-line)
+            (return `(SPLICE ,@xs)))))
 
 (define $blockquote-line
   (try (pdo-one $non-indent-space
@@ -773,10 +786,20 @@
             (return (heading-xexpr (string->symbol (format "h~a" (length hs)))
                                    xs)))))
 
+(define $setext-heading
+  (try (pdo (xs <- (many1Till $inline $newline))
+            (c <- (oneOf "=-"))
+            (many (char c))
+            $newline
+            (many1 $blank-line)
+            (return (heading-xexpr (match c [#\= 'h1][#\- 'h2]) xs)))))
+
 (define (heading-xexpr sym xs)
   (define id (xexprs->slug xs))
   (cond [(current-strict-markdown?) `(,sym ()         ,@xs)]
         [else                       `(,sym ([id ,id]) ,@xs)]))
+
+(define $heading (<or> $atx-heading $setext-heading))
 
 (define $hr
   (try (pdo $non-indent-space
@@ -940,18 +963,21 @@
 
 (define $list (<or> $ordered-list $bullet-list))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (define $block
-  (<?> (<or> $atx-heading
-             $blockquote
+  (<?> (<or> $blockquote
              $verbatim/indent
              (unless-strict $verbatim/fenced)
              (unless-strict $footnote-def)
              (unless-strict $image/block)
              $reference
              $html/block
+             $heading
              $list
              $hr
-             $setext-heading/para/plain)
+             $para
+             $plain)
        "block"))
 
 (define $markdown
@@ -960,7 +986,6 @@
            (many $blank-line)
            $eof))
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
 ;; Reference links
@@ -976,7 +1001,7 @@
        `(,tag ,attributes ,@(map do-xpr body))]
       [(? promise? x) (do-xpr (force x))] ;do-xpr in case nested promises
       [x x]))
-  (for/list ([x (in-list xs)])
+  (for/list ([x xs])
     (normalize (do-xpr x)))) ;normalize in case SPLICEs from promises
 
 (define (normalize-linkref-id s)
@@ -997,7 +1022,6 @@
                 '((p () "hi")
                   (p () "there"))))
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
 ;; Footnotes

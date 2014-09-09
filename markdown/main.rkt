@@ -3,74 +3,11 @@
 (require "parse.rkt"
          "display-xexpr.rkt"
          "toc.rkt"
-         feature-profile
-         feature-profile/plug-in-lib
-         (only-in profile/render-text render)
-         (only-in profile/analyzer    analyze-samples)
-         parsack)
+         feature-profile)
 
 (provide (all-from-out "parse.rkt")
          (all-from-out "display-xexpr.rkt")
          (all-from-out "toc.rkt"))
-
-(define parsack-features
-  (list
-   (feature "Parsack Backtracking" 'feature-profile:parsack-backtracking
-            values
-            ;; From https://github.com/stamourv/marketplace
-            ;; commit c3574966bc
-            (λ (f-p)
-              (define items
-                (for/fold ([l '()])
-                          ([i (feature-report-core-samples f-p)])
-                  (append i l)))
-              ;; Non Terminal -> Backtracking
-              (define nt-b
-                (for/fold ([table (hash)])
-                          ([i items])
-                  (match i
-                    [`(,or ,bt ,id) (hash-update table id (λ (x) (max bt x)) bt)]
-                    [else           table])))
-              (define intern (make-interner))
-              (define post-processed
-                (for/list ([c-s (feature-report-core-samples f-p)]
-                           [p-s (cdr (feature-report-raw-samples f-p))])
-                  (define processed
-                      (for/list ([i c-s])
-                        (match i
-                          [`(,or ,bt ,id) #:when (bt . < . (hash-ref nt-b id))
-                           `(bt-<or> ,bt ,id)]
-                          [else i])))
-                  (list* (car p-s) (cadr p-s) ; thread id and timestamp
-                         (for/list ([v processed])
-                           (intern (cons v #f))))))
-              ;; Call edge profiler
-              (newline) (newline) (displayln "Parsack Backtracking")
-              (render (analyze-samples (cons (feature-report-total-time f-p) post-processed)))))))
-
-(define parsack-syntactic-latent-mark-keys
-  (append (map feature-key parsack-features) default-syntactic-latent-mark-keys))
-
-(define (build-function-latent-marks in data)
-  (match data
-    ['() in]
-
-    [`((,mark) . ,rest) (build-function-latent-marks in rest)]
-    [`((,mark ,function . ,function*) . ,rest)
-     (dict-set* (build-function-latent-marks in `((,mark . ,function*) . ,rest))
-                function mark)]
-   [else (error "Invalid data: ~a" data)]))
-
-(define parsack-functional-latent-marks
-  (build-function-latent-marks default-functional-latent-marks
-                               (list (list 'feature-profile:parsack
-                                           #'<or>2))))
-
-(define parsack-profile-compile-handler
-  (make-latent-mark-compile-handler parsack-syntactic-latent-mark-keys
-                                    parsack-functional-latent-marks))
-
-;(current-compile parsack-profile-compile-handler)
 
 ;; For use as command-line pipe.
 (module+ main
