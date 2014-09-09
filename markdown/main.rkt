@@ -20,13 +20,27 @@
             ;; From https://github.com/stamourv/marketplace
             ;; commit c3574966bc
             (λ (f-p)
-              (define  intern (make-interner))
+              (define items
+                (for/fold ([l '()])
+                          ([i (feature-report-core-samples f-p)])
+                  (append i l)))
+              ;; Non Terminal -> Backtracking
+              (define nt-b
+                (for/fold ([table (hash)])
+                          ([i items])
+                  (match i
+                    [`(,or ,bt ,id) (hash-update table id (λ (x) (max bt x)) bt)]
+                    [else           table])))
+              (define intern (make-interner))
               (define post-processed
                 (for/list ([c-s (feature-report-core-samples f-p)]
                            [p-s (cdr (feature-report-raw-samples f-p))])
                   (define processed
-                    (let loop ([vs (filter values c-s)])
-                      (if (null? vs) '(ground) (cons vs (loop (cdr vs))))))
+                      (for/list ([i c-s])
+                        (match i
+                          [`(,or ,bt ,id) #:when (bt . < . (hash-ref nt-b id))
+                           `(bt-<or> ,bt ,id)]
+                          [else i])))
                   (list* (car p-s) (cadr p-s) ; thread id and timestamp
                          (for/list ([v processed])
                            (intern (cons v #f))))))
