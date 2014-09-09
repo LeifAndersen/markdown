@@ -13,7 +13,8 @@
  (contract-out
   [read-markdown (->* () (symbol?) xexpr-element-list?)]
   [parse-markdown (->* ((or/c string? path?)) (symbol?) xexpr-element-list?)]
-  [current-strict-markdown? parameter/c]))
+  [current-strict-markdown? parameter/c])
+ parsack-features)
 
 (module+ test
   (require rackunit))
