@@ -2,7 +2,8 @@
 
 (require "parse.rkt"
          "display-xexpr.rkt"
-         "toc.rkt")
+         "toc.rkt"
+         feature-profile)
 
 (provide (all-from-out "parse.rkt")
          (all-from-out "display-xexpr.rkt")
@@ -10,6 +11,9 @@
 
 ;; For use as command-line pipe.
 (module+ main
-  (display "<!DOCTYPE html>")
-  (display-xexpr `(html (head () (meta ([charset "utf-8"])))
-                        (body () ,@(read-markdown)))))
+  (feature-profile
+   #:extra-features parsack-features
+   (begin
+     (display "<!DOCTYPE html>")
+     (display-xexpr `(html (head () (meta ([charset "utf-8"])))
+                           (body () ,@(read-markdown)))))))
