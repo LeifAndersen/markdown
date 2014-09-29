@@ -27,8 +27,8 @@
                   getState setState withState
                   State State? Consumed Consumed! Empty Ok Error Msg
                   parse parse-result parsack-error parse-source
-                  incr-pos
-                  parsack-features))
+                  incr-pos)
+         parsack/features)
 
 (provide pdo
          pdo-one
